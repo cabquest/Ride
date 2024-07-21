@@ -1,0 +1,43 @@
+# Python environment
+env/
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+
+# Docker
+Dockerfile
+docker-compose.yaml
+
+# Environment variables
+.env
+
+# Virtual environment
+venv/
+env/
+
+# Logs
+*.log
+
+# Bytecode files
+*.pyc
+
+# IDE/Editor directories
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Miscellaneous
+*.pid
+*.seed
+*.pid.lock
+
+# Database files
+.dbdata/
