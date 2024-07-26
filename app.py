@@ -1,13 +1,13 @@
 from flask import Flask, jsonify, request
 from flask_migrate import Migrate
 from flask_cors import CORS
-from models import db, Ride, Driver, User, Liveloc
+from models import db, Ride, Driver, User, Liveloc, CancelReason
 import requests
 from datetime import datetime
 import math, os, random
 from dotenv import load_dotenv
 from flask_mail import Mail, Message
-
+from rabbitmq_producer import publish_message
 
 load_dotenv()
 
@@ -126,6 +126,20 @@ def create_app():
         )
         db.session.add(ride)
         db.session.commit()
+        data = {'user_id' : data['user_id'],
+            "driver_id" : data['driver_id'],
+            "vehicle_type" : data['vehicle_type'],
+            "current_location" : currentlocation,
+            "pick_up_location" : data['pick_up_location'],
+            "drop_location" : data['drop_location'],
+            "pickup_km" : pickup_km,
+            "total_km" : float(data['total_km'].replace(' km', '')),
+            "status" : 'ride started',
+            "fare" : float(data['fare']),
+            "created_at" : datetime.now().isoformat(),
+            "role": 'communication'
+            }
+        publish_message('communication',data)
 
         return jsonify({'message':'okkk'})
 
@@ -137,9 +151,8 @@ def create_app():
             Ride.user_id == data['userid'],
             Ride.status.in_(['ride started', 'driver arrived'])
         ).first()
-        print(ride)
         if ride:
-            return jsonify({'message':'ridestarted'})
+            return jsonify({'message':'ridestarted','rideid':ride.id})
         return jsonify({'message':'okkk'})  
 
     @app.route('/getride', methods = ['POST'])
@@ -150,6 +163,7 @@ def create_app():
             Ride.driver_id == driver.id,
             Ride.status.in_(['ride started', 'driver arrived', 'trip started'])
         ).first()
+        user = User.query.filter_by(user_id = ride.user_id).first()
         rides = {
             'id':ride.id,
             'vehicle_type':ride.vehicle_type,
@@ -158,7 +172,8 @@ def create_app():
             'drop_location':ride.drop_location,
             'pickupkm':ride.pickup_km,
             'total_km':ride.total_km,
-            'fare':ride.fare
+            'fare':ride.fare,
+            'phone':user.phone
         }
         return jsonify({'message':'okkk','ride':rides})
     
@@ -218,7 +233,8 @@ def create_app():
             'pickupkm':ride.pickup_km,
             'total_km':ride.total_km,
             'fare':ride.fare,
-            'live':{'lat':live.latitude,'lng':live.longitude}
+            'live':{'lat':live.latitude,'lng':live.longitude},
+            'phone':driver.phone
         }
         return jsonify({'message':'okkk','ride':rides})
 
@@ -240,41 +256,62 @@ def create_app():
     @app.route('/driverarrived',methods = ["POST"])
     def driverarrived():
         data = request.get_json()
-        driver = Driver.query.filter_by( email = data['email']).first()
-        ride = Ride.query.filter(
-            Ride.driver_id == driver.id,
-            Ride.status.in_(['ride started', 'driver arrived'])
-        ).first()
-        user = User.query.filter_by(user_id = ride.user_id).first()
-        ride.status = 'driver arrived'
-        db.session.commit()
-        otp = generate_otp()
-        # send_mail(user.email,user.fullname,otp)
-        return jsonify({'message':'ok','otp':otp})
+        try:
+            driver = Driver.query.filter_by( email = data['email']).first()
+            ride = Ride.query.filter(
+                Ride.driver_id == driver.id,
+                Ride.status.in_(['ride started', 'driver arrived'])
+            ).first()
+            user = User.query.filter_by(user_id = ride.user_id).first()
+            ride.status = 'driver arrived'
+            db.session.commit()
+            otp = generate_otp()
+            # send_mail(user.email,user.fullname,otp)
+            return jsonify({'message':'ok','otp':otp})
+        except:
+            return jsonify({'message':'error'})
     
     @app.route('/tripstarted',methods = ["POST"])
     def tripstarted():
         data = request.get_json()
-        driver = Driver.query.filter_by(email = data['email']).first()
-        ride = Ride.query.filter(
-            Ride.driver_id == driver.id,
-            Ride.status == 'driver arrived'
-        ).first()
-        ride.status = 'trip started'
-        db.session.commit()
-        return jsonify({'message':'ok'})
-    
+        try:
+            driver = Driver.query.filter_by(email = data['email']).first()
+            ride = Ride.query.filter(
+                Ride.driver_id == driver.id,
+                Ride.status == 'driver arrived'
+            ).first()
+            ride.status = 'trip started'
+            db.session.commit()
+            return jsonify({'message':'ok'})
+        except:
+            return jsonify({'message':'error'})
+        
     @app.route('/istripstarted',methods = ['POST'])
     def istripstarted():
         data = request.get_json()
-        user = User.query.filter_by(email = data['email']).first()
-        ride = Ride.query.filter(
-            Ride.user_id == user.id,
-            Ride.status == 'trip started'
-        ).first()     
-        if ride:
-            return jsonify({'message':'trip started'})
-        return jsonify({'message':'ok'})
+        try:
+            try:
+                user = User.query.filter_by(email = data['email']).first()
+                ride = Ride.query.filter(Ride.id == data['rideid'], Ride.user_id == user.id, Ride.status == 'cancelled by driver').first()
+                if ride:
+                    data = {
+                        'rideid':ride.id
+                    }
+                    publish_message('communication',{'userid':ride.user_id,'driverid':ride.driver_id,'role':'cancelled by driver'})
+                    return jsonify({'message':'driver is cancelled'})
+            except:
+                pass
+            user = User.query.filter_by(email = data['email']).first()
+            ride = Ride.query.filter(
+                Ride.id == data['rideid'],
+                Ride.user_id == user.id,
+                Ride.status == 'trip started'
+            ).first()     
+            if ride:
+                return jsonify({'message':'trip started'})
+            return jsonify({'message':'ok'})
+        except:
+            return jsonify({'message':'error'})
 
     @app.route('/getlive',methods = ["POST"])
     def getlive():
@@ -290,20 +327,67 @@ def create_app():
     @app.route('/isridefinish', methods = ["POST"])
     def isridefinish():
         data = request.get_json()
-        user = User.query.filter_by(email = data['email']).first()
-        ride = Ride.query.filter(Ride.user_id == user.id, Ride.status == 'trip completed').first()
-        if ride:
-            return jsonify({'message':'trip completed'})
-        return jsonify({'message':'ok'})
+        try:
+            user = User.query.filter_by(email = data['email']).first()
+            ride = Ride.query.filter(Ride.user_id == user.id, Ride.status == 'trip completed').first()
+            if ride:
+                return jsonify({'message':'trip completed'})
+            return jsonify({'message':'ok'})
+        except:
+            return jsonify({'message':'error'})
     
     @app.route('/ridefinish',methods = ['POST'])
     def ridefinish():
+        try:
+            data = request.get_json()
+            driver = Driver.query.filter_by(email = data['email']).first()
+            ride = Ride.query.filter_by(driver_id = driver.id).first()
+            ride.status = 'trip completed'
+            db.session.commit()
+            return jsonify({'message':'ok'})
+        except:
+            return jsonify({'message':'error'})
+
+    @app.route('/cancelfromdriver', methods = ["POST"])
+    def cancelfromdriver():
+        data =  request.get_json()
+        try:
+            ride = Ride.query.filter_by(id = data['rideid']).first()
+            ride.status = 'cancelled by driver'
+            cancel = CancelReason(ride_id = ride.id, reason = data['reason'])
+            db.session.add(cancel)
+            db.session.commit()
+            return jsonify({'message':'ok'})  
+        except Exception as e:
+            print('something error',e)
+            return jsonify({'message':'error'})
+        
+    @app.route('/cancelfromuser', methods = ["POST"])
+    def cancelfromuser():
         data = request.get_json()
-        driver = Driver.query.filter_by(email = data['email']).first()
-        ride = Ride.query.filter_by(driver_id = driver.id).first()
-        ride.status = 'trip completed'
-        db.session.commit()
+        try:
+            ride = Ride.query.filter_by(id=data['rideid']).first()
+            ride.status = 'cancelled by user'
+            cancel = CancelReason(ride_id = ride.id, reason = data['reason'])
+            db.session.add(cancel)
+            db.session.commit()
+            return jsonify({'message':'ok'})
+        except:
+            return jsonify({'message':'ride not found'})
+
+    @app.route('/checkusercancelled', methods = ["POST"])
+    def checkusercancelled():
+        data = request.get_json()
+        ride = Ride.query.filter_by(id = data['rideid']).first()
+        if ride.status == 'cancelled by user':
+            return jsonify({'message':'cancelled'})
         return jsonify({'message':'ok'})
+
+    @app.route('/fetchride', methods = ["GET"])
+    def fetchride():
+        rides = Ride.query.all()
+        ridelist = [{'id':ride.id, 'userid':ride.user_id, 'driverid':ride.driver_id, 'vehicle':ride.vehicle_type, 'pickup':ride.pick_up_location, 'drop':ride.drop_location, 'km':ride.total_km, 'status':ride.status, 'fare':ride.fare, 'date':ride.created_at} for ride in rides]
+        return jsonify(ridelist)
 
     return app
 

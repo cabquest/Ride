@@ -39,3 +39,8 @@ class Liveloc(db.Model):
     driver_id = db.Column(db.Integer, nullable=False)
     latitude = db.Column(db.String(200), nullable = True)
     longitude = db.Column(db.String(200), nullable = True)
+
+class CancelReason(db.Model):
+    id = db.Column(db.Integer, primary_key = True, autoincrement = True)
+    ride_id = db.Column(db.Integer, nullable = False)
+    reason = db.Column(db.String(200), nullable = False)
