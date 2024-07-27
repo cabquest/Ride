@@ -8,6 +8,7 @@ import math, os, random
 from dotenv import load_dotenv
 from flask_mail import Mail, Message
 from rabbitmq_producer import publish_message
+from sqlalchemy import func, extract
 
 load_dotenv()
 
@@ -388,6 +389,42 @@ def create_app():
         rides = Ride.query.all()
         ridelist = [{'id':ride.id, 'userid':ride.user_id, 'driverid':ride.driver_id, 'vehicle':ride.vehicle_type, 'pickup':ride.pick_up_location, 'drop':ride.drop_location, 'km':ride.total_km, 'status':ride.status, 'fare':ride.fare, 'date':ride.created_at} for ride in rides]
         return jsonify(ridelist)
+
+    @app.route('/fetchlive', methods = ["GET"])
+    def fetchlive():
+        lives = Liveloc.query.all()
+        livelocations = [{'id':live.id, 'driver':live.driver_id, 'lat':live.latitude, 'lng':live.longitude} for live in lives]
+        return jsonify(livelocations)
+    
+    @app.route('/monthly_fares/<int:year>', methods=['GET'])
+    def get_monthly_fares(year):
+
+        results = (
+            db.session.query(
+                extract('month', Ride.created_at).label('month'),
+                func.sum(Ride.fare).label('total_fare')
+            )
+            .filter(extract('year', Ride.created_at) == year,
+            Ride.status == 'trip completed'
+            )
+            .group_by(extract('month', Ride.created_at))
+            .order_by(extract('month', Ride.created_at))
+            .all()
+        )
+        
+        month_names = [
+            'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+        ]
+        
+        monthly_fares_dict = {i + 1: {'month': month_names[i], 'value': 0} for i in range(12)}
+
+        
+        for month, total_fare in results:
+            monthly_fares_dict[month]['value'] = float(total_fare) if total_fare is not None else 0
+        
+        monthly_fares = list(monthly_fares_dict.values())
+        
+        return jsonify(monthly_fares)
 
     return app
 
